@@ -2,6 +2,7 @@
 using ExpenseTracker.Data;
 using ExpenseTracker.DTOs;
 using ExpenseTracker.Models;
+using ExpenseTracker.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,143 +13,97 @@ namespace ExpenseTracker.Controllers;
 [ApiController]
 public class ExpensesController : ControllerBase
 {
-    private readonly ApplicationDbContext _context;
+    private readonly IExpenseService _expenseService;
     private readonly IMapper _mapper;
 
-    public ExpensesController(ApplicationDbContext context, IMapper mapper)
+    public ExpensesController(IExpenseService expenseService, IMapper mapper)
     {
-        _context = context;
+        _expenseService = expenseService;
         _mapper = mapper;
     }
 
     [HttpGet]
     public async Task<ActionResult<IEnumerable<ExpenseDto>>> GetExpenses()
     {
-        var expense = await _context.Expenses
-            .Include(s => s.Category)
-            .ToListAsync();
-
-        var expenseDto = _mapper.Map<List<ExpenseDto>>(expense);
-
-        return Ok(expenseDto);
+        var expenses = await _expenseService.GetAllExpensesAsync();
+        var expenseDtos = _mapper.Map<List<ExpenseDto>>(expenses);
+        return Ok(expenseDtos);
     }
 
     [HttpGet("{id}")]
     public async Task<ActionResult<ExpenseDto>> GetExpenseById(int id)
     {
-        var expense = await _context.Expenses
-            .Include(s => s.Category)
-            .FirstOrDefaultAsync(e => e.Id == id);
-
+        var expense = await _expenseService.GetExpenseByIdAsync(id);
         if (expense == null)
         {
             return NotFound();
         }
-
         var expenseDto = _mapper.Map<ExpenseDto>(expense);
         return Ok(expenseDto);
-    }
-
-
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteExpense(int id)
-    {
-        var expense = await _context.Expenses.FindAsync(id);
-        if (expense == null)
-        {
-            return NotFound();
-        }
-
-        _context.Expenses.Remove(expense);
-        await _context.SaveChangesAsync();
-
-        return NoContent();
     }
 
     [HttpPost]
     public async Task<ActionResult<ExpenseDto>> CreateExpense(CreateExpenseDto createExpenseDto)
     {
-        var expense = _mapper.Map<Expense>(createExpenseDto);
-
-        var category = await _context.Categories.FindAsync(expense.CategoryId);
-        if (category == null)
+        try
         {
-            return BadRequest("Invalid category.");
+            var expense = _mapper.Map<Expense>(createExpenseDto);
+            var createdExpense = await _expenseService.CreateExpenseAsync(expense);
+            var expenseDto = _mapper.Map<ExpenseDto>(createdExpense);
+            return CreatedAtAction(nameof(GetExpenseById), new { id = expenseDto.Id }, expenseDto);
         }
-
-        var overallBudgetSetting = await _context.BudgetSettings.FindAsync(1);
-        if (overallBudgetSetting == null)
+        catch (ArgumentException ex)
         {
-            return BadRequest("Overall budget not configured.");
+            return BadRequest(ex.Message);
         }
-
-        double currentCategoryTotal = await _context.Expenses
-            .Where(e => e.CategoryId == expense.CategoryId)
-            .SumAsync(e => e.Amount);
-
-        double currentOverallTotal = await _context.Expenses
-            .SumAsync(e => e.Amount);
-
-        if (currentCategoryTotal + expense.Amount > category.Budget)
+        catch (InvalidOperationException ex)
         {
-            return BadRequest("Adding this expense exceeds the category budget.");
+            return BadRequest(ex.Message);
         }
-
-        if (currentOverallTotal + expense.Amount > overallBudgetSetting.OverallBudget)
+        catch (Exception ex)
         {
-            return BadRequest("Adding this expense exceeds the overall budget.");
+            return StatusCode(500, "An unexpected error occurred.");
         }
-
-        _context.Expenses.Add(expense);
-        await _context.SaveChangesAsync();
-
-        var expenseDto = _mapper.Map<ExpenseDto>(expense);
-        return CreatedAtAction(nameof(GetExpenseById), new { id = expense.Id }, expenseDto);
     }
 
     [HttpPut("{id}")]
     public async Task<IActionResult> UpdateExpense(int id, UpdateExpenseDto updateExpenseDto)
     {
-        var expense = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
+        try
+        {
+            var expense = await _expenseService.GetExpenseByIdAsync(id);
+            if (expense == null)
+            {
+                return NotFound();
+            }
+
+            _mapper.Map(updateExpenseDto, expense);
+            await _expenseService.UpdateExpenseAsync(expense);
+            return NoContent();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, "An unexpected error occurred.");
+        }
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteExpense(int id)
+    {
+        var expense = await _expenseService.GetExpenseByIdAsync(id);
         if (expense == null)
         {
             return NotFound();
         }
-
-        _mapper.Map(updateExpenseDto, expense);
-
-        var category = await _context.Categories.FindAsync(expense.CategoryId);
-        if (category == null)
-        {
-            return BadRequest("Invalid category.");
-        }
-
-        var overallBudgetSetting = await _context.BudgetSettings.FindAsync(1);
-        if (overallBudgetSetting == null)
-        {
-            return BadRequest("Overall budget not configured.");
-        }
-
-        double categoryTotalExcludingCurrent = await _context.Expenses
-            .Where(e => e.CategoryId == expense.CategoryId && e.Id != id)
-            .SumAsync(e => e.Amount);
-
-        double overallTotalExcludingCurrent = await _context.Expenses
-            .Where(e => e.Id != id)
-            .SumAsync(e => e.Amount);
-
-        if (categoryTotalExcludingCurrent + expense.Amount > category.Budget)
-        {
-            return BadRequest("Updating this expense exceeds the category budget.");
-        }
-
-        if (overallTotalExcludingCurrent + expense.Amount > overallBudgetSetting.OverallBudget)
-        {
-            return BadRequest("Updating this expense exceeds the overall budget.");
-        }
-
-        await _context.SaveChangesAsync();
-
+        await _expenseService.DeleteExpenseAsync(id);
         return NoContent();
     }
 
